@@ -7,10 +7,13 @@ Convert an ACQ file collected via Biopac's AcqKnowledge software to a MATLAB str
 import sys
 import argparse
 import re
+import json
+import os
 import bioread
 import numpy as np
 import pandas as pd
 from scipy import io as sio
+import pytz
 import pdb
 
 def argument_parser(argv):
@@ -44,15 +47,40 @@ def clean(s):
 
     return s
 
+def load_signal_renaming():
+    '''Load signal renaming mappings from JSON file.
+    Returns dict of mappings, or empty dict if file doesn't exist.'''
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    json_path = os.path.join(script_dir, 'signal_renaming.json')
+
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Warning: Could not load signal_renaming.json: {e}")
+            return {}
+    else:
+        return {}
+
 def parse_data(data):
     '''Read in ACQ file using njvack's bioread package (https://github.com/uwmadison-chm/bioread)'''
     d = {} # new dictionary to be saved with scipy.io
 
+    # Load signal renaming mapping
+    signal_mapping = load_signal_renaming()
+
     # Add channel data
     for channel in data.channels:
-        chan_name = channel.name.lower().strip().replace(' ', '_')
-        d[clean(channel.name)] = {
-            'wave':channel.data,
+        # Get cleaned channel name
+        cleaned_name = clean(channel.name)
+
+        # Apply signal renaming if mapping exists
+        final_name = signal_mapping.get(cleaned_name, cleaned_name)
+
+        d[final_name] = {
+            'wave': channel.data,
             'Fs': channel.samples_per_second,
             'unit': channel.units,
         }
@@ -65,9 +93,19 @@ def parse_data(data):
     event_markers['type'] = []
     event_markers['channel_number'] = []
     event_markers['channel'] = []
+    event_markers['seconds'] = []
+    event_markers['minutes'] = []
+    event_markers['date_created_utc'] = []
 
     valid_events = [i for i in data.event_markers if i.type_code != 'nrto']
     for event in valid_events:
+
+        # Error check for missing timestamp (REQUIRED for CSV export)
+        if event.date_created_utc is None:
+            raise ValueError(
+                f"Event '{event.text}' at sample {event.sample_index} is missing "
+                f"date_created_utc timestamp. Cannot export CSV."
+            )
 
         [setattr(event, key, np.nan) for key in event.__dict__.keys() if getattr(event, key) == None]
 
@@ -78,9 +116,33 @@ def parse_data(data):
         event_markers['channel_number'].append(event.channel_number)
         event_markers['channel'].append(event.channel)
 
+        # Calculate time values
+        Fs = data.channels[0].samples_per_second
+        seconds = event.sample_index / Fs
+        event_markers['seconds'].append(seconds)
+        event_markers['minutes'].append(seconds / 60)
+        event_markers['date_created_utc'].append(event.date_created_utc)
+
     d['event_markers'] = event_markers
 
     return d
+
+def export_event_markers_csv(event_markers, output_path):
+    '''Export event markers to CSV with time conversion.'''
+
+    EST = pytz.timezone('US/Eastern')
+
+    # Build DataFrame
+    df = pd.DataFrame({
+        'label': event_markers['label'],
+        'sample_index': event_markers['sample_index'],
+        'seconds': event_markers['seconds'],
+        'minutes': event_markers['minutes'],
+        'time (EST)': [dt.astimezone(EST).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                       for dt in event_markers['date_created_utc']]
+    })
+
+    df.to_csv(output_path, index=False)
 
 def cat_multiple_files(d_list):
 
@@ -115,6 +177,21 @@ if __name__ == '__main__':
         d = cat_multiple_files(d_list)
     else:
         d = d_list[0];
+
+    # Export event markers to CSV (before wrapping and saving to MAT)
+    csv_output_path = args.outfile.replace('.mat', '_events.csv')
+    try:
+        export_event_markers_csv(d['event_markers'], csv_output_path)
+        print(f"Event markers exported to: {csv_output_path}")
+    except ValueError as e:
+        print(f"ERROR: Cannot export event markers CSV: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Warning: Could not export CSV: {e}")
+
+    # Remove datetime objects from event_markers (can't be saved to MATLAB)
+    if 'date_created_utc' in d['event_markers']:
+        del d['event_markers']['date_created_utc']
 
     d = {'d': d} # wrap into one MATLAB struct rather than multiple variables
 
