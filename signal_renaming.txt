@@ -1,0 +1,23 @@
+signal_renaming = {
+        'aop': 'aortic_pressure',
+        'aortic pressure': 'aortic_pressure',
+        'right atrial pressure': 'right_atrial_pressure',
+        'rap': 'right_atrial_pressure',
+        'femoralabp' : 'femoral_pressure',
+        'faabp': 'femoral_pressure',
+        'caabp': 'carotid_pressure',
+        'cvp': 'central_venous_pressure',
+        'pap': 'pulmonary_artery_pressure',
+        'icp': 'intracranial_pressure',
+        'ekg': 'ecg',
+        'cpp': 'coronary_perfusion_pressure',
+        'coronary perfusion pressure': 'coronary_perfusion_pressure',
+        'ica_flow' : 'internal_carotid_artery_flow',
+        'caflow': 'carotid_artery_flow',
+        'faflow': 'femoral_artery_flow',
+        'carotid_flow': 'carotid_artery_flow',
+        'femoral_flow': 'femoral_artery_flow',
+        'hr': 'heart_rate',
+        'co': 'cardiac_output',
+        'pleth':'ppg'
+    }
