@@ -255,6 +255,8 @@ if __name__ == '__main__':
     channel_keys = [k for k in d.keys() if k != 'event_markers']
     Fs = d[channel_keys[0]]['Fs']
     d['recording_start_utc'] = start_times[0].isoformat()
+    EST = pytz.timezone('US/Eastern')
+    d['recording_start_local'] = start_times[0].astimezone(EST).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
     d['Fs'] = Fs
 
     # Export event markers to CSV (before wrapping and saving to MAT)
