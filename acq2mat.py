@@ -9,7 +9,7 @@ import argparse
 import re
 import json
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
 import bioread
 import numpy as np
 import pandas as pd
@@ -64,6 +64,61 @@ def load_signal_renaming():
             return {}
     else:
         return {}
+
+def timestamps_to_datetime(timestamps, tz_name='US/Eastern'):
+    '''Convert unix timestamps from the MAT file to Python datetime objects.
+
+    Args:
+        timestamps: scalar, list, or numpy array of unix timestamps (seconds since epoch)
+        tz_name: pytz timezone string (default: 'US/Eastern')
+
+    Returns:
+        list of timezone-aware datetime objects, or a single datetime if
+        a scalar was passed
+    '''
+    tz = pytz.timezone(tz_name)
+    scalar = np.isscalar(timestamps)
+    timestamps = np.asarray(timestamps, dtype=np.float64).ravel()
+
+    result = [datetime.fromtimestamp(float(ts), tz=tz) for ts in timestamps]
+
+    return result[0] if scalar else result
+
+def validate_sampling_rates(d):
+    '''Verify all channels share the same sampling frequency.
+
+    Raises ValueError if any channel has a different Fs.
+    '''
+    channel_keys = [k for k in d.keys() if k != 'event_markers']
+    rates = {k: d[k]['Fs'] for k in channel_keys}
+    unique_rates = set(rates.values())
+
+    if len(unique_rates) > 1:
+        details = ', '.join(f"'{k}': {v} Hz" for k, v in rates.items())
+        raise ValueError(
+            f"All channels must have the same sampling frequency to generate "
+            f"a shared timestamp vector. Found: {details}"
+        )
+
+
+def build_timestamp_vector(start_time_local, Fs, n_samples):
+    '''Build a unix timestamp vector from a local start time.
+
+    Args:
+        start_time_local: timezone-aware datetime object
+        Fs: sampling frequency in Hz
+        n_samples: total number of samples
+
+    Returns:
+        numpy array of unix timestamps (float64 seconds since epoch), one per sample
+
+    MATLAB usage:
+        datetime(d.timestamps_local, 'ConvertFrom', 'epochtime', 'TicksPerSecond', 1)
+    '''
+    start_epoch = start_time_local.timestamp()
+    step_seconds = 1.0 / Fs
+    return start_epoch + np.arange(n_samples, dtype=np.float64) * step_seconds
+
 
 def parse_data(data):
     '''Read in ACQ file using njvack's bioread package (https://github.com/uwmadison-chm/bioread)
@@ -251,13 +306,21 @@ if __name__ == '__main__':
     else:
         d = d_list[0]
 
+    # Validate that all channels share the same sampling frequency
+    validate_sampling_rates(d)
+
     # Add metadata for time vector calculation (always, for both single and multi-file)
     channel_keys = [k for k in d.keys() if k != 'event_markers']
     Fs = d[channel_keys[0]]['Fs']
     d['recording_start_utc'] = start_times[0].isoformat()
     EST = pytz.timezone('US/Eastern')
-    d['recording_start_local'] = start_times[0].astimezone(EST).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+    start_time_local = start_times[0].astimezone(EST)
+    d['recording_start_local'] = start_time_local.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
     d['Fs'] = Fs
+
+    # Build local timestamp vector (MATLAB datenums) for all samples
+    n_samples = len(d[channel_keys[0]]['wave'])
+    d['timestamps_local'] = build_timestamp_vector(start_time_local, Fs, n_samples)
 
     # Export event markers to CSV (before wrapping and saving to MAT)
     csv_output_path = args.outfile.replace('.mat', '_events.csv')
