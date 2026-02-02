@@ -141,9 +141,15 @@ def parse_data(data):
     signal_mapping = load_signal_renaming()
 
     # Add channel data
-    for channel in data.channels:
+    for i, channel in enumerate(data.channels):
         # Get cleaned channel name
         cleaned_name = clean(channel.name)
+
+        # Guard against empty names (channel name had no valid characters)
+        if not cleaned_name:
+            cleaned_name = f'channel_{i + 1}'
+            print(f"Warning: Channel '{channel.name}' produced an empty name after cleaning. "
+                  f"Renamed to '{cleaned_name}'.")
 
         # Apply signal renaming if mapping exists
         final_name = signal_mapping.get(cleaned_name, cleaned_name)
@@ -164,6 +170,7 @@ def parse_data(data):
     event_markers['channel'] = []
     event_markers['seconds'] = []
     event_markers['minutes'] = []
+    event_markers['time_local'] = []
     event_markers['date_created_utc'] = []
 
     valid_events = [i for i in data.event_markers if i.type_code != 'nrto']
@@ -176,20 +183,22 @@ def parse_data(data):
                 f"date_created_utc timestamp. Cannot export CSV."
             )
 
-        [setattr(event, key, np.nan) for key in event.__dict__.keys() if getattr(event, key) == None]
-
         event_markers['label'].append(event.text)
         event_markers['sample_index'].append(event.sample_index+1) # +1 since MATLAB is indexed from 1, not 0
         event_markers['type_code'].append(event.type_code)
         event_markers['type'].append(event.type)
-        event_markers['channel_number'].append(event.channel_number)
-        event_markers['channel'].append(event.channel)
+        event_markers['channel_number'].append(event.channel_number if event.channel_number is not None else np.nan)
+        event_markers['channel'].append(event.channel if event.channel is not None else np.nan)
 
         # Calculate time values (will be recalculated after concatenation if needed)
         Fs = data.channels[0].samples_per_second
         seconds = event.sample_index / Fs
         event_markers['seconds'].append(seconds)
         event_markers['minutes'].append(seconds / 60)
+        EST = pytz.timezone('US/Eastern')
+        event_markers['time_local'].append(
+            event.date_created_utc.astimezone(EST).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        )
         event_markers['date_created_utc'].append(event.date_created_utc)
 
     d['event_markers'] = event_markers
@@ -207,7 +216,7 @@ def export_event_markers_csv(event_markers, output_path):
         'sample_index': event_markers['sample_index'],
         'seconds': event_markers['seconds'],
         'minutes': event_markers['minutes'],
-        'time (EST)': [dt.astimezone(EST).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        'time (EST)': ['="' + dt.astimezone(EST).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3] + '"'
                        for dt in event_markers['date_created_utc']]
     })
 
@@ -323,7 +332,9 @@ if __name__ == '__main__':
     d['timestamps_local'] = build_timestamp_vector(start_time_local, Fs, n_samples)
 
     # Export event markers to CSV (before wrapping and saving to MAT)
-    csv_output_path = args.outfile.replace('.mat', '_events.csv')
+    csv_date = start_time_local.strftime('%Y-%m-%d')
+    csv_output_dir = os.path.dirname(args.outfile)
+    csv_output_path = os.path.join(csv_output_dir, f'{csv_date}_extracted_comments.csv') if csv_output_dir else f'{csv_date}_extracted_comments.csv'
     try:
         export_event_markers_csv(d['event_markers'], csv_output_path)
         print(f"Event markers exported to: {csv_output_path}")
@@ -333,9 +344,11 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"Warning: Could not export CSV: {e}")
 
-    # Remove datetime objects from event_markers (can't be saved to MATLAB)
+    # Convert datetime objects to ISO strings for MATLAB compatibility
     if 'date_created_utc' in d['event_markers']:
-        del d['event_markers']['date_created_utc']
+        d['event_markers']['date_created_utc'] = [
+            dt.isoformat() for dt in d['event_markers']['date_created_utc']
+        ]
 
     d = {'d': d} # wrap into one MATLAB struct rather than multiple variables
 

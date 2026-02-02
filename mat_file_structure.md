@@ -17,7 +17,9 @@ d
 │   ├── .channel_number     n-by-1 double   — associated channel (often empty)
 │   ├── .channel            n-by-1 cellstr  — associated channel name (often empty)
 │   ├── .seconds            n-by-1 double   — event time in seconds from start
-│   └── .minutes            n-by-1 double   — event time in minutes from start
+│   ├── .minutes            n-by-1 double   — event time in minutes from start
+│   ├── .time_local         n-by-1 cellstr  — local time (US/Eastern) per event
+│   └── .date_created_utc   n-by-1 cellstr  — ISO 8601 UTC timestamp per event
 │
 ├── timestamps_local        n-by-1 double   — unix timestamps for every sample (seconds since epoch)
 ├── Fs                      scalar double   — global sampling frequency (Hz)
@@ -56,6 +58,8 @@ d.event_markers  % now a table
 | `channel` | cellstr | Channel name associated with the marker (often empty) |
 | `seconds` | double | Time of event in seconds from recording start |
 | `minutes` | double | Time of event in minutes from recording start |
+| `time_local` | cellstr | Local time string per event (`'YYYY-MM-DD HH:MM:SS.mmm'`, US/Eastern) |
+| `date_created_utc` | cellstr | ISO 8601 UTC timestamp per event (from ACQ file metadata) |
 
 ### `timestamps_local`
 
@@ -127,4 +131,4 @@ When multiple ACQ files are passed to `acq2mat.py`, they are joined in order:
 
 | File | Description |
 |------|-------------|
-| `*_events.csv` | CSV export of event markers with a `time (EST)` column. Generated alongside the MAT file. |
+| `{date}_extracted_comments.csv` | CSV export of event markers with a `time (EST)` column. `{date}` is the recording start date in local time (e.g., `2025-10-22_extracted_comments.csv`). Generated alongside the MAT file. |

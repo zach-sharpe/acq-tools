@@ -129,8 +129,7 @@ def run_conversion(acq_files, output_folder, output_filename, window):
         # Check return code
         if result.returncode == 0:
             window['-OUTPUT-'].update(f"\nSUCCESS! Output saved to:\n{output_path}\n", append=True)
-            csv_path = output_path.replace('.mat', '_events.csv')
-            window['-OUTPUT-'].update(f"CSV events file: {csv_path}\n", append=True)
+            window['-OUTPUT-'].update(f"CSV comments file also saved to output folder.\n", append=True)
             return True
         else:
             window['-OUTPUT-'].update(f"\nERROR: Conversion failed with return code {result.returncode}\n", append=True)
