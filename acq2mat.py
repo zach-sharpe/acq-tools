@@ -140,6 +140,9 @@ def parse_data(data):
     # Load signal renaming mapping
     signal_mapping = load_signal_renaming()
 
+    # Track channel name usage to detect duplicates
+    name_counts = {}
+
     # Add channel data
     for i, channel in enumerate(data.channels):
         # Get cleaned channel name
@@ -153,6 +156,17 @@ def parse_data(data):
 
         # Apply signal renaming if mapping exists
         final_name = signal_mapping.get(cleaned_name, cleaned_name)
+
+        # Handle duplicate channel names
+        if final_name in name_counts:
+            suffix = name_counts[final_name]
+            name_counts[final_name] += 1
+            renamed = f'{final_name}_{suffix}'
+            print(f"Warning: Duplicate channel name '{final_name}' found. "
+                  f"Renamed to '{renamed}'.")
+            final_name = renamed
+        else:
+            name_counts[final_name] = 1
 
         d[final_name] = {
             'wave': channel.data,
