@@ -2,8 +2,11 @@
 '''
 acq2mat_gui.py
 
-GUI wrapper for acq2mat.py using FreeSimpleGUI.
-Allows easy file selection and conversion of ACQ files to MATLAB format.
+GUI wrapper for acq2mat.py and acq2h5.py using FreeSimpleGUI.
+Allows easy file selection and conversion of ACQ files to either MATLAB
+(.mat, "Classic") or HDF5 (.h5, "New") format. The two formats share the
+same file/folder selection; the chosen Convert button decides the output
+format and which converter script is invoked.
 '''
 
 import os
@@ -13,13 +16,21 @@ import subprocess
 from pathlib import Path
 
 
+# Map output format -> (file extension, converter script). Both converters
+# share the same CLI: <acq files...> -o <output path>.
+FORMATS = {
+    'mat': {'ext': '.mat', 'script': 'acq2mat.py', 'label': '.mat (Classic)'},
+    'h5':  {'ext': '.h5',  'script': 'acq2h5.py',  'label': '.h5 (New)'},
+}
+
+
 def create_layout():
     '''Create the GUI layout.'''
 
     sg.theme('DefaultNoMoreNagging')
 
     layout = [
-        [sg.Text('ACQ to MAT Converter', font=('Helvetica', 16, 'bold'))],
+        [sg.Text('ACQ Converter', font=('Helvetica', 16, 'bold'))],
         [sg.HorizontalSeparator()],
 
         # File selection
@@ -38,15 +49,20 @@ def create_layout():
 
         # Output filename
         [sg.Text('Output filename (optional):', size=(25, 1))],
-        [sg.Input(key='-OUTFILE-', size=(50, 1)), sg.Text('.mat')],
-        [sg.Text('Leave blank to auto-generate from folder name',
+        [sg.Input(key='-OUTFILE-', size=(50, 1)),
+         sg.Text('+ format extension', font=('Helvetica', 9, 'italic'), text_color='gray')],
+        [sg.Text('Leave blank to auto-generate from folder name. The extension '
+                 'is set by the Convert button you press.',
                  font=('Helvetica', 9, 'italic'), text_color='gray')],
 
         [sg.Text('')],  # Spacer
         [sg.HorizontalSeparator()],
 
-        # Action buttons
-        [sg.Button('Convert', size=(10, 1), button_color=('white', 'green')),
+        # Action buttons -- one per output format, plus Cancel
+        [sg.Button('Convert to .mat', key='-CONVERT-MAT-', size=(14, 1),
+                   button_color=('white', 'green')),
+         sg.Button('Convert to .h5', key='-CONVERT-H5-', size=(14, 1),
+                   button_color=('white', '#1f6aa5')),
          sg.Button('Cancel', size=(10, 1))],
 
         [sg.Text('')],  # Spacer
@@ -59,28 +75,32 @@ def create_layout():
     return layout
 
 
-def generate_default_filename(folder_path):
+def generate_default_filename(folder_path, ext):
     '''
-    Generate default .mat filename from folder name.
-    Example: "/path/to/2025-10-11" -> "2025-10-11.mat"
+    Generate default output filename from folder name.
+    Example: "/path/to/2025-10-11", ".mat" -> "2025-10-11.mat"
     '''
     if not folder_path:
         return ""
 
     folder_name = os.path.basename(folder_path.rstrip(os.sep))
-    return f"{folder_name}.mat"
+    return f"{folder_name}{ext}"
 
 
-def run_conversion(acq_files, output_folder, output_filename, window):
+def run_conversion(acq_files, output_folder, output_filename, fmt, window):
     '''
-    Execute acq2mat.py conversion.
+    Execute the converter for the requested output format.
 
     Args:
         acq_files (str): Semicolon-separated list of ACQ file paths
         output_folder (str): Output directory path
-        output_filename (str): Output filename (with or without .mat)
+        output_filename (str): Output filename (with or without the extension)
+        fmt (str): Output format key -- 'mat' or 'h5' (see FORMATS).
         window: FreeSimpleGUI window object for updating output
     '''
+    ext = FORMATS[fmt]['ext']
+    script_name = FORMATS[fmt]['script']
+
     # Validate inputs
     if not acq_files:
         window['-OUTPUT-'].update("ERROR: No ACQ files selected.\n", append=True)
@@ -95,21 +115,21 @@ def run_conversion(acq_files, output_folder, output_filename, window):
 
     # Determine output filename
     if not output_filename:
-        output_filename = generate_default_filename(output_folder)
+        output_filename = generate_default_filename(output_folder, ext)
         window['-OUTPUT-'].update(f"Using auto-generated filename: {output_filename}\n", append=True)
 
-    # Ensure .mat extension
-    if not output_filename.endswith('.mat'):
-        output_filename += '.mat'
+    # Ensure the correct extension for the chosen format
+    if not output_filename.endswith(ext):
+        output_filename += ext
 
     # Build full output path
     output_path = os.path.join(output_folder, output_filename)
 
     # Build command
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    acq2mat_script = os.path.join(script_dir, 'acq2mat.py')
+    converter_script = os.path.join(script_dir, script_name)
 
-    cmd = [sys.executable, acq2mat_script] + file_list + ['-o', output_path]
+    cmd = [sys.executable, converter_script] + file_list + ['-o', output_path]
 
     window['-OUTPUT-'].update(f"Running conversion...\n", append=True)
     window['-OUTPUT-'].update(f"Command: {' '.join(cmd)}\n\n", append=True)
@@ -143,7 +163,10 @@ def run_conversion(acq_files, output_folder, output_filename, window):
 def main():
     '''Main GUI event loop.'''
 
-    window = sg.Window('ACQ2MAT Converter', create_layout(), finalize=True)
+    window = sg.Window('ACQ Converter', create_layout(), finalize=True)
+
+    # Map Convert button events to their output format key.
+    convert_events = {'-CONVERT-MAT-': 'mat', '-CONVERT-H5-': 'h5'}
 
     while True:
         event, values = window.read()
@@ -154,20 +177,22 @@ def main():
         # Auto-update filename when folder changes
         if event == '-OUTFOLDER-':
             if values['-OUTFOLDER-'] and not values['-OUTFILE-']:
-                default_name = generate_default_filename(values['-OUTFOLDER-'])
-                # Don't auto-fill, just show it would be used
+                # Show the base name; the extension depends on the Convert
+                # button pressed, so display it without one.
+                base_name = generate_default_filename(values['-OUTFOLDER-'], '')
                 window['-OUTPUT-'].update(
                     f"Folder selected: {values['-OUTFOLDER-']}\n"
-                    f"Default filename will be: {default_name}\n\n",
+                    f"Default filename will be: {base_name}.mat / {base_name}.h5\n\n",
                     append=True)
 
-        # Convert button
-        if event == 'Convert':
+        # Convert buttons (one per output format)
+        if event in convert_events:
             window['-OUTPUT-'].update('')  # Clear output
             run_conversion(
                 values['-FILES-'],
                 values['-OUTFOLDER-'],
                 values['-OUTFILE-'],
+                convert_events[event],
                 window
             )
 
