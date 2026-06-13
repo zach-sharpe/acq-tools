@@ -15,7 +15,7 @@ Output layout
     |-- signals/                  (HDF5 Group)
     |   |-- <signal_name>         (float64[] waveform; attrs: Fs, units)
     |   |-- ...
-    |   |-- timestamps_local      (float64[] unix seconds; attr: Fs)
+    |   |-- timestamps_unix       (float64[] unix seconds; attr: Fs)
     |-- event_markers             (scalar UTF-8 string, JSON-encoded)
     |-- recording_start_utc       (scalar UTF-8 string, ISO)
     |-- recording_start_local     (scalar UTF-8 string, 'YYYY-MM-DD HH:MM:SS.mmm')
@@ -28,10 +28,13 @@ Design notes
   single-depth access rule holds in both Python and MATLAB.
       Python : f['signals/ecg'][:]              ; f['signals/ecg'].attrs['Fs']
       MATLAB : h5read(file, '/signals/ecg')     ; h5readatt(file, '/signals/ecg', 'Fs')
-- timestamps_local is stored INSIDE signals/ (not at the top level), and carries
+- timestamps_unix is stored INSIDE signals/ (not at the top level), and carries
   an Fs attribute so a "for every dataset in signals, read Fs" loop works
   uniformly. Values are unix timestamps (float64 seconds since 1970-01-01 UTC),
-  the same convention as acq2mat.py -- NOT MATLAB datenums.
+  the same convention as acq2mat.py -- NOT MATLAB datenums. Storing the
+  timestamps alongside the signals means a single read of signals/ yields every
+  sample-aligned array (waveforms + the shared time axis) without a second
+  fetch -- which matters for alignment scripts.
       MATLAB : datetime(ts, 'ConvertFrom', 'epochtime', 'TicksPerSecond', 1)
 - This output deliberately diverges from biopac_h5_format.md (timestamps inside
   signals/, unix seconds rather than datenums).
@@ -60,7 +63,7 @@ _NON_SIGNAL_KEYS = {
     'recording_start_utc',
     'recording_start_local',
     'Fs',
-    'timestamps_local',
+    'timestamps_unix',
 }
 
 
@@ -85,16 +88,20 @@ def argument_parser(argv):
     return args
 
 
-def write_h5(d, outfile):
+def write_h5(d, outfile, file_meta=None):
     '''Write the processed data dictionary to a flat HDF5 file.
 
     Args:
         d: data dictionary produced by parse_data/cat_multiple_files, augmented
            in __main__ with 'recording_start_utc', 'recording_start_local',
-           'Fs', and 'timestamps_local'. Channel entries are dicts with
-           'wave', 'Fs', and 'unit'. 'event_markers' has already had its
+           'Fs', and 'timestamps_unix'. Channel entries are dicts with
+           'wave', 'Fs', 'unit', and channel provenance ('order_num',
+           'point_count', 'frequency_divider', 'raw_scale_factor',
+           'raw_offset', 'dtype'). 'event_markers' has already had its
            datetime values converted to ISO strings.
         outfile: path to the .h5 file to create (overwritten if it exists).
+        file_meta: optional dict of file-level provenance ('file_revision',
+           'native_samples_per_second') written as root-level HDF5 attributes.
     '''
     str_dtype = h5py.string_dtype('utf-8')
 
@@ -115,10 +122,28 @@ def write_h5(d, outfile):
             units = d[name].get('unit') or ''
             ds.attrs.create('units', units, dtype=str_dtype)
 
-        # timestamps_local lives inside signals/, with an Fs attribute so that
+            # Channel provenance attributes (see acq2h5_format.md). Numeric
+            # attrs are stored with explicit numpy types; dtype is a string.
+            # Each is written only when present, so write_h5 also accepts
+            # legacy inputs (e.g. old .mat files via convert.py) that lack them.
+            # point_count falls back to the actual waveform length.
+            chan = d[name]
+            if 'order_num' in chan:
+                ds.attrs['order_num'] = np.int64(chan['order_num'])
+            ds.attrs['point_count'] = np.int64(chan.get('point_count', len(wave)))
+            if 'frequency_divider' in chan:
+                ds.attrs['frequency_divider'] = np.int64(chan['frequency_divider'])
+            if 'raw_scale_factor' in chan:
+                ds.attrs['raw_scale_factor'] = np.float64(chan['raw_scale_factor'])
+            if 'raw_offset' in chan:
+                ds.attrs['raw_offset'] = np.float64(chan['raw_offset'])
+            if 'dtype' in chan:
+                ds.attrs.create('dtype', chan['dtype'], dtype=str_dtype)
+
+        # timestamps_unix lives inside signals/, with an Fs attribute so that
         # iterating signals uniformly still finds an Fs on every dataset.
-        ts = np.asarray(d['timestamps_local'], dtype=np.float64)
-        ts_ds = signals.create_dataset('timestamps_local', data=ts, compression='gzip')
+        ts = np.asarray(d['timestamps_unix'], dtype=np.float64)
+        ts_ds = signals.create_dataset('timestamps_unix', data=ts, compression='gzip')
         ts_ds.attrs['Fs'] = np.float64(d['Fs'])
 
         # event_markers: one scalar JSON string (datetimes already ISO strings).
@@ -130,6 +155,15 @@ def write_h5(d, outfile):
         f.create_dataset('recording_start_local', data=d['recording_start_local'], dtype=str_dtype)
         f.create_dataset('Fs', data=np.float64(d['Fs']))
 
+        # File-level provenance as root attributes (MATLAB: h5readatt(file, '/', name)).
+        # Each is written only when present, so legacy inputs (e.g. an old .mat
+        # via convert.py) that lack file metadata simply omit these attrs.
+        if file_meta:
+            if 'file_revision' in file_meta:
+                f.attrs['file_revision'] = np.int64(file_meta['file_revision'])
+            if 'native_samples_per_second' in file_meta:
+                f.attrs['native_samples_per_second'] = np.float64(file_meta['native_samples_per_second'])
+
 
 if __name__ == '__main__':
 
@@ -140,13 +174,16 @@ if __name__ == '__main__':
     parsed = [parse_data(i) for i in data]
     d_list = [p[0] for p in parsed]
     start_times = [p[1] for p in parsed]
+    file_meta = parsed[0][2]  # file-level provenance from the first file
 
     if len(d_list) >= 2: # concatenate files if there are more than one
         d = cat_multiple_files(d_list, start_times)
     else:
         d = d_list[0]
 
-    # Validate that all channels share the same sampling frequency
+    # Enforce a single shared sampling frequency across all channels. The .h5
+    # layout assumes one rate (top-level /Fs, one timestamp axis), so a mismatch
+    # is a hard error -- same behavior as acq2mat.py.
     validate_sampling_rates(d)
 
     # Add metadata for time vector calculation (always, for both single and multi-file)
@@ -158,9 +195,9 @@ if __name__ == '__main__':
     d['recording_start_local'] = start_time_local.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
     d['Fs'] = Fs
 
-    # Build local timestamp vector (unix seconds) for all samples
+    # Build unix timestamp vector (epoch seconds) for all samples
     n_samples = len(d[channel_keys[0]]['wave'])
-    d['timestamps_local'] = build_timestamp_vector(start_time_local, Fs, n_samples)
+    d['timestamps_unix'] = build_timestamp_vector(start_time_local, Fs, n_samples)
 
     # Export event markers to CSV (before wrapping and saving to HDF5)
     csv_date = start_time_local.strftime('%Y-%m-%d')
@@ -181,5 +218,5 @@ if __name__ == '__main__':
             dt.isoformat() for dt in d['event_markers']['date_created_utc']
         ]
 
-    write_h5(d, args.outfile)
+    write_h5(d, args.outfile, file_meta)
     print(f"HDF5 file saved to: {args.outfile}")

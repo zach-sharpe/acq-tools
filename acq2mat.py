@@ -52,6 +52,7 @@ if __name__ == '__main__':
     parsed = [parse_data(i) for i in data]
     d_list = [p[0] for p in parsed]
     start_times = [p[1] for p in parsed]
+    file_meta = parsed[0][2]  # file-level provenance from the first file
 
     if len(d_list) >= 2: # concatenate files if there are more than one
         d = cat_multiple_files(d_list, start_times)
@@ -69,6 +70,12 @@ if __name__ == '__main__':
     start_time_local = start_times[0].astimezone(EST)
     d['recording_start_local'] = start_time_local.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
     d['Fs'] = Fs
+
+    # File-level provenance (channel-level provenance already lives inside each
+    # channel struct via parse_data). Added after channel_keys is computed so it
+    # is not mistaken for a channel.
+    d['file_revision'] = file_meta['file_revision']
+    d['native_samples_per_second'] = file_meta['native_samples_per_second']
 
     # Build local timestamp vector (MATLAB datenums) for all samples
     n_samples = len(d[channel_keys[0]]['wave'])

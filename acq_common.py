@@ -72,6 +72,9 @@ def timestamps_to_datetime(timestamps, tz_name='US/Eastern'):
 def validate_sampling_rates(d):
     '''Verify all channels share the same sampling frequency.
 
+    Both output formats assume a single shared rate when building the timestamp
+    vector and the top-level Fs scalar, so a mismatch is a hard error.
+
     Raises ValueError if any channel has a different Fs.
     '''
     channel_keys = [k for k in d.keys() if k != 'event_markers']
@@ -86,11 +89,12 @@ def validate_sampling_rates(d):
         )
 
 
-def build_timestamp_vector(start_time_local, Fs, n_samples):
-    '''Build a unix timestamp vector from a local start time.
+def build_timestamp_vector(start_time, Fs, n_samples):
+    '''Build a unix timestamp vector from a recording start time.
 
     Args:
-        start_time_local: timezone-aware datetime object
+        start_time: timezone-aware datetime object (any tz; epoch seconds are
+            an absolute instant, so the result is tz-neutral)
         Fs: sampling frequency in Hz
         n_samples: total number of samples
 
@@ -98,9 +102,9 @@ def build_timestamp_vector(start_time_local, Fs, n_samples):
         numpy array of unix timestamps (float64 seconds since epoch), one per sample
 
     MATLAB usage:
-        datetime(d.timestamps_local, 'ConvertFrom', 'epochtime', 'TicksPerSecond', 1)
+        datetime(d.timestamps_unix, 'ConvertFrom', 'epochtime', 'TicksPerSecond', 1)
     '''
-    start_epoch = start_time_local.timestamp()
+    start_epoch = start_time.timestamp()
     step_seconds = 1.0 / Fs
     return start_epoch + np.arange(n_samples, dtype=np.float64) * step_seconds
 
@@ -109,8 +113,10 @@ def parse_data(data):
     '''Read in ACQ file using njvack's bioread package (https://github.com/uwmadison-chm/bioread)
 
     Returns:
-        tuple: (d, start_time) where d is the data dictionary and start_time is
-               the recording start time (datetime UTC) from earliest event marker
+        tuple: (d, start_time, file_meta) where d is the data dictionary,
+               start_time is the recording start time (datetime UTC) from the
+               earliest event marker, and file_meta is a dict of file-level
+               provenance ('file_revision', 'native_samples_per_second').
     '''
     d = {} # new dictionary to be saved with scipy.io
 
@@ -157,6 +163,16 @@ def parse_data(data):
             'wave': channel.data,
             'Fs': channel.samples_per_second,
             'unit': channel.units,
+            # Channel provenance from bioread (see acq2h5_format.md). dtype is
+            # stored as a string (e.g. '>i2') so it survives JSON/MAT/HDF5.
+            # point_count is the per-channel sample count and is recomputed in
+            # cat_multiple_files() after NaN-gap concatenation.
+            'order_num': channel.order_num,
+            'point_count': channel.point_count,
+            'frequency_divider': channel.frequency_divider,
+            'raw_scale_factor': channel.raw_scale_factor,
+            'raw_offset': channel.raw_offset,
+            'dtype': str(channel.dtype),
         }
 
     # Add event markers. These are the BIOPAC comments placed during recording.
@@ -202,7 +218,14 @@ def parse_data(data):
 
     d['event_markers'] = event_markers
 
-    return d, start_time
+    # File-level provenance. file_revision lives on the graph_header (not the
+    # datafile); native_samples_per_second is the file's authoritative rate.
+    file_meta = {
+        'file_revision': data.graph_header.file_revision,
+        'native_samples_per_second': data.samples_per_second,
+    }
+
+    return d, start_time, file_meta
 
 
 def export_event_markers_csv(event_markers, output_path):
@@ -248,6 +271,16 @@ def cat_multiple_files(d_list, start_times):
 
     for i, d_new in enumerate(d_list[1:], start=1):
         next_start_time = start_times[i]
+
+        # Warn (don't fail) if a channel's dtype differs between files. The
+        # concatenated wave is float64 (NaN gaps), so the original dtype is
+        # provenance only; we keep the first file's value.
+        for key in channel_keys:
+            first_dtype = d[key].get('dtype')
+            new_dtype = d_new.get(key, {}).get('dtype')
+            if new_dtype is not None and new_dtype != first_dtype:
+                print(f"Warning: Channel '{key}' dtype differs between files "
+                      f"('{first_dtype}' vs '{new_dtype}'). Keeping '{first_dtype}'.")
 
         # Calculate gap duration
         gap = next_start_time - prev_end_time
@@ -297,5 +330,11 @@ def cat_multiple_files(d_list, start_times):
         seconds = (sample_idx - 1) / Fs  # -1 to convert from MATLAB 1-indexing
         d['event_markers']['seconds'][i] = seconds
         d['event_markers']['minutes'][i] = seconds / 60
+
+    # point_count is per-channel provenance; after NaN-gap concatenation the
+    # true sample count is the final wave length, so recompute it (the other
+    # provenance attrs carry forward unchanged from the first file).
+    for key in channel_keys:
+        d[key]['point_count'] = len(d[key]['wave'])
 
     return d

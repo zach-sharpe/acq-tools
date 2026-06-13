@@ -22,15 +22,21 @@ function d = loadh5(filename)
 %   d.<name>                  same waveform, also at top level for convenience
 %   d.Fs_per_signal.<name>    sampling frequency (Hz) for that signal
 %   d.units_per_signal.<name> unit string for that signal
-%   d.timestamps_local        unix-second timestamp per sample (column vector)
+%   d.provenance.<name>       struct of channel provenance for that signal:
+%                             .order_num, .point_count, .frequency_divider,
+%                             .raw_scale_factor, .raw_offset, .dtype (only the
+%                             fields actually present on the dataset)
+%   d.timestamps_unix         unix-second timestamp per sample (column vector)
 %   d.Fs                      shared sampling frequency (Hz)
+%   d.file_revision           AcqKnowledge file revision (if present)
+%   d.native_samples_per_second  file native sampling rate, Hz (if present)
 %   d.recording_start_utc     char, ISO UTC start time
 %   d.recording_start_local   char, local start time
 %   d.event_markers           table of BIOPAC comments (see below)
 %
-% NOTE on timestamps: d.timestamps_local holds unix seconds. Convert to
+% NOTE on timestamps: d.timestamps_unix holds unix seconds. Convert to
 % MATLAB datetime with:
-%   datetime(d.timestamps_local, 'ConvertFrom', 'epochtime', 'TicksPerSecond', 1)
+%   datetime(d.timestamps_unix, 'ConvertFrom', 'epochtime', 'TicksPerSecond', 1)
 %
 % EXAMPLES
 %
@@ -54,6 +60,12 @@ d = struct();
 d.signals = struct();
 d.Fs_per_signal = struct();
 d.units_per_signal = struct();
+d.provenance = struct();
+
+% Channel provenance attributes carried through from acq2h5.py. Numeric attrs
+% are coerced to double; dtype is a char string.
+provNumeric = {'order_num', 'point_count', 'frequency_divider', ...
+    'raw_scale_factor', 'raw_offset'};
 
 info = h5info(filename, '/signals');
 
@@ -64,9 +76,9 @@ for i = 1:numel(info.Datasets)
     wave = h5read(filename, dpath);
     wave = double(wave(:));   % force column vector, double precision
 
-    if strcmp(name, 'timestamps_local')
+    if strcmp(name, 'timestamps_unix')
         % Timestamps are not a physiologic signal -- promote to top level.
-        d.timestamps_local = wave;
+        d.timestamps_unix = wave;
         continue
     end
 
@@ -85,10 +97,37 @@ for i = 1:numel(info.Datasets)
         if iscell(units), units = units{1}; end
         d.units_per_signal.(name) = char(units);
     end
+
+    % Channel provenance attributes -> d.provenance.<name>.<attr>.
+    prov = struct();
+    for k = 1:numel(provNumeric)
+        attr = provNumeric{k};
+        if any(strcmp(attrNames, attr))
+            prov.(attr) = double(h5readatt(filename, dpath, attr));
+        end
+    end
+    if any(strcmp(attrNames, 'dtype'))
+        dt = h5readatt(filename, dpath, 'dtype');
+        if iscell(dt), dt = dt{1}; end
+        prov.dtype = char(dt);
+    end
+    d.provenance.(name) = prov;
 end
 
 % Top-level scalar datasets.
 d.Fs = double(h5read(filename, '/Fs'));
+
+% File-level provenance from root (/) attributes, if present.
+rootInfo = h5info(filename, '/');
+if ~isempty(rootInfo.Attributes)
+    rootAttrNames = {rootInfo.Attributes.Name};
+    if any(strcmp(rootAttrNames, 'file_revision'))
+        d.file_revision = double(h5readatt(filename, '/', 'file_revision'));
+    end
+    if any(strcmp(rootAttrNames, 'native_samples_per_second'))
+        d.native_samples_per_second = double(h5readatt(filename, '/', 'native_samples_per_second'));
+    end
+end
 
 start_utc = h5read(filename, '/recording_start_utc');
 if iscell(start_utc), start_utc = start_utc{1}; end

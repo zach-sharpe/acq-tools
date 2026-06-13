@@ -31,8 +31,12 @@ import h5py
 from acq2h5 import write_h5, _NON_SIGNAL_KEYS
 
 # Fields stored at the top level of the .mat 'd' struct that are NOT channels.
-# Mirrors _NON_SIGNAL_KEYS from acq2h5 (kept in sync via that import).
-_MAT_NON_CHANNEL = _NON_SIGNAL_KEYS
+# Mostly mirrors acq2h5's _NON_SIGNAL_KEYS, but the .mat format names its
+# per-sample timestamp field timestamps_local (the .h5 format renamed it to
+# timestamps_unix). Same values, different key -- so swap the name here, or the
+# .mat's timestamps_local field gets misread as a channel.
+_MAT_NON_CHANNEL = (_NON_SIGNAL_KEYS - {'timestamps_unix'}) | {
+    'timestamps_local', 'file_revision', 'native_samples_per_second'}
 
 
 def _mat_scalar_str(value):
@@ -58,7 +62,7 @@ def _mat_field_to_list(value):
 def _read_mat_dict(mat_path):
     '''Load a .mat created by acq2mat.py into the in-memory `d` dict shape that
     write_h5() expects (channels as {'wave','Fs','unit'}, plus event_markers,
-    recording_start_*, Fs, timestamps_local).
+    recording_start_*, Fs, timestamps_unix).
     '''
     m = sio.loadmat(mat_path, squeeze_me=False, struct_as_record=False)
     if 'd' not in m:
@@ -75,11 +79,27 @@ def _read_mat_dict(mat_path):
         if name in _MAT_NON_CHANNEL:
             continue
         ch = getattr(mat, name)[0, 0]
-        d[name] = {
+        chan = {
             'wave': np.asarray(ch.wave, dtype=np.float64).ravel(),
             'Fs': float(np.ravel(ch.Fs)[0]),
             'unit': _mat_scalar_str(ch.unit),
         }
+        # Channel provenance (added alongside the .h5 channel attrs). Older .mat
+        # files predating these fields won't have them, so each is optional.
+        ch_fields = set(ch._fieldnames)
+        if 'order_num' in ch_fields:
+            chan['order_num'] = int(np.ravel(ch.order_num)[0])
+        if 'point_count' in ch_fields:
+            chan['point_count'] = int(np.ravel(ch.point_count)[0])
+        if 'frequency_divider' in ch_fields:
+            chan['frequency_divider'] = int(np.ravel(ch.frequency_divider)[0])
+        if 'raw_scale_factor' in ch_fields:
+            chan['raw_scale_factor'] = float(np.ravel(ch.raw_scale_factor)[0])
+        if 'raw_offset' in ch_fields:
+            chan['raw_offset'] = float(np.ravel(ch.raw_offset)[0])
+        if 'dtype' in ch_fields:
+            chan['dtype'] = _mat_scalar_str(ch.dtype)
+        d[name] = chan
 
     # Event markers: struct of parallel arrays -> dict of lists.
     em_struct = getattr(mat, 'event_markers')[0, 0]
@@ -91,10 +111,22 @@ def _read_mat_dict(mat_path):
     d['recording_start_utc'] = _mat_scalar_str(getattr(mat, 'recording_start_utc'))
     d['recording_start_local'] = _mat_scalar_str(getattr(mat, 'recording_start_local'))
     d['Fs'] = float(np.ravel(getattr(mat, 'Fs'))[0])
-    d['timestamps_local'] = np.asarray(
+    # The .mat format names this field timestamps_local; the .h5 format calls it
+    # timestamps_unix. The values are identical (unix epoch seconds) -- only the
+    # key differs -- so remap to the key write_h5() expects.
+    d['timestamps_unix'] = np.asarray(
         getattr(mat, 'timestamps_local'), dtype=np.float64).ravel()
 
-    return d
+    # File-level provenance (optional; absent in legacy .mat files). Returned
+    # separately so mat_to_h5 can forward it to write_h5 as root attributes.
+    file_meta = {}
+    if 'file_revision' in fields:
+        file_meta['file_revision'] = int(np.ravel(getattr(mat, 'file_revision'))[0])
+    if 'native_samples_per_second' in fields:
+        file_meta['native_samples_per_second'] = float(
+            np.ravel(getattr(mat, 'native_samples_per_second'))[0])
+
+    return d, file_meta
 
 
 def mat_to_h5(mat_path, h5_path=None):
@@ -112,11 +144,11 @@ def mat_to_h5(mat_path, h5_path=None):
         h5_path = os.path.splitext(mat_path)[0] + '.h5'
     h5_path = os.fspath(h5_path)
 
-    d = _read_mat_dict(mat_path)
+    d, file_meta = _read_mat_dict(mat_path)
     # write_h5 expects event_markers values to be JSON-serializable; the .mat
     # already stores date_created_utc as ISO strings, so no datetime conversion
-    # is needed here.
-    write_h5(d, h5_path)
+    # is needed here. file_meta carries file-level provenance to root attrs.
+    write_h5(d, h5_path, file_meta)
     return h5_path
 
 
@@ -163,17 +195,32 @@ def h5_to_mat(h5_path, mat_path=None):
             )
         signals = f['signals']
 
-        # Channels: every signal dataset except timestamps_local becomes a
+        # Channels: every signal dataset except timestamps_unix becomes a
         # nested {wave, Fs, unit} struct, matching acq2mat.py output.
         for name in signals.keys():
-            if name == 'timestamps_local':
+            if name == 'timestamps_unix':
                 continue
             ds = signals[name]
-            d[name] = {
+            chan = {
                 'wave': np.asarray(ds, dtype=np.float64),
                 'Fs': float(ds.attrs['Fs']) if 'Fs' in ds.attrs else float(f['Fs'][()]),
                 'unit': _h5_attr_str(ds.attrs.get('units', '')),
             }
+            # Channel provenance attrs -> nested struct fields (parity with the
+            # .h5 attrs). Each is carried only when present on the dataset.
+            if 'order_num' in ds.attrs:
+                chan['order_num'] = int(ds.attrs['order_num'])
+            if 'point_count' in ds.attrs:
+                chan['point_count'] = int(ds.attrs['point_count'])
+            if 'frequency_divider' in ds.attrs:
+                chan['frequency_divider'] = int(ds.attrs['frequency_divider'])
+            if 'raw_scale_factor' in ds.attrs:
+                chan['raw_scale_factor'] = float(ds.attrs['raw_scale_factor'])
+            if 'raw_offset' in ds.attrs:
+                chan['raw_offset'] = float(ds.attrs['raw_offset'])
+            if 'dtype' in ds.attrs:
+                chan['dtype'] = _h5_attr_str(ds.attrs['dtype'])
+            d[name] = chan
 
         # event_markers: JSON string -> dict of lists (same shape acq2mat.py
         # builds before savemat).
@@ -184,7 +231,16 @@ def h5_to_mat(h5_path, mat_path=None):
         d['recording_start_utc'] = _h5_scalar(f['recording_start_utc'][()])
         d['recording_start_local'] = _h5_scalar(f['recording_start_local'][()])
         d['Fs'] = float(f['Fs'][()])
-        d['timestamps_local'] = np.asarray(signals['timestamps_local'], dtype=np.float64)
+        # .h5 stores this as signals/timestamps_unix; the .mat format keeps the
+        # historical field name timestamps_local (same unix-second values).
+        d['timestamps_local'] = np.asarray(signals['timestamps_unix'], dtype=np.float64)
+
+        # File-level provenance from root attrs -> top-level .mat fields
+        # (parity with acq2mat.py). Carried only when present.
+        if 'file_revision' in f.attrs:
+            d['file_revision'] = int(f.attrs['file_revision'])
+        if 'native_samples_per_second' in f.attrs:
+            d['native_samples_per_second'] = float(f.attrs['native_samples_per_second'])
 
     sio.savemat(mat_path, {'d': d}, oned_as='column', do_compression=True)
     return mat_path
