@@ -160,14 +160,17 @@ def write_h5(d, outfile, file_meta=None):
                 f.attrs['native_samples_per_second'] = np.float64(file_meta['native_samples_per_second'])
 
 
-if __name__ == '__main__':
+def main(argv=None):
+    '''Console-script entry point: convert ACQ file(s) to an .h5 file.'''
+    # Imported lazily to avoid a circular import: convert_acq imports write_h5
+    # from this module. Package-relative form first, flat fallback for direct
+    # execution by file path.
+    try:
+        from .convert_acq import convert_acq
+    except ImportError:
+        from convert_acq import convert_acq
 
-    # Imported lazily (only when run as a script) to avoid a circular import:
-    # convert_acq imports write_h5 from this module. Run directly this is the
-    # flat form; the package-relative form is unused here (CLI runs standalone).
-    from convert_acq import convert_acq
-
-    args = argument_parser(sys.argv[1:])
+    args = argument_parser(sys.argv[1:] if argv is None else argv)
 
     # convert_acq() takes (folder, filename); the CLI exposes a single -o path.
     # Split it back apart, mapping an empty directory to the current directory.
@@ -183,3 +186,7 @@ if __name__ == '__main__':
     for msg in result.messages:
         print(msg)
     print(f"HDF5 file saved to: {result.output_path}")
+
+
+if __name__ == '__main__':
+    main()

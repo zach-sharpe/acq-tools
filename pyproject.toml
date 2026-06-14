@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acq-tools"
+version = "0.1.0"
+description = "Convert and analyze BIOPAC AcqKnowledge physiologic data (.acq -> .mat/.h5)."
+readme = ".github/README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Zach Sharpe" }]
+
+# Core runtime dependencies needed to import acq_tools and run conversions.
+# The GUI's FreeSimpleGUI dependency is an optional extra (see below) so that
+# projects depending on acq-tools purely for conversion don't pull in a GUI
+# toolkit. Version floors are conservative; pin tighter in requirements.txt if a
+# reproducible environment is needed.
+dependencies = [
+    "bioread>=3.0.1",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "h5py>=3.8",
+    "pytz>=2023.3",
+]
+
+[project.optional-dependencies]
+# `pip install acq-tools[gui]` adds the desktop GUI dependency.
+gui = ["FreeSimpleGUI>=5.2.0"]
+
+[project.urls]
+Homepage = "https://github.com/zach-sharpe/acq-tools"
+Repository = "https://github.com/zach-sharpe/acq-tools"
+
+[project.scripts]
+# Console entry points -> the main() functions in each module. After install
+# these are available on PATH as `acq2mat`, `acq2h5`, and `acq2mat-gui`.
+acq2mat = "acq_tools.acq2mat:main"
+acq2h5 = "acq_tools.acq2h5:main"
+acq2mat-gui = "acq_tools.acq2mat_gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# signal_renaming.json is loaded at runtime via a __file__-relative path, so it
+# must ship inside the installed package.
+acq_tools = ["signal_renaming.json"]

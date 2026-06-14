@@ -41,9 +41,9 @@ def argument_parser(argv):
     return args
 
 
-if __name__ == '__main__':
-
-    args = argument_parser(sys.argv[1:])
+def main(argv=None):
+    '''Console-script entry point: convert ACQ file(s) to a .mat file.'''
+    args = argument_parser(sys.argv[1:] if argv is None else argv)
 
     # convert_acq() takes (folder, filename); the CLI exposes a single -o path.
     # Split it back apart, mapping an empty directory to the current directory.
@@ -59,3 +59,7 @@ if __name__ == '__main__':
     for msg in result.messages:
         print(msg)
     print(f"MAT file saved to: {result.output_path}")
+
+
+if __name__ == '__main__':
+    main()
