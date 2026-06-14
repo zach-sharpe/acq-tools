@@ -13,7 +13,11 @@ import sys
 import argparse
 import os
 
-from convert_acq import convert_acq
+# Dual import: package-relative first, flat fallback for `python acq2mat.py ...`.
+try:
+    from .convert_acq import convert_acq
+except ImportError:
+    from convert_acq import convert_acq
 
 
 def argument_parser(argv):

@@ -28,7 +28,11 @@ import numpy as np
 import scipy.io as sio
 import h5py
 
-from acq2h5 import write_h5, _NON_SIGNAL_KEYS
+# Dual import: package-relative first, flat fallback for standalone execution.
+try:
+    from .acq2h5 import write_h5, _NON_SIGNAL_KEYS
+except ImportError:
+    from acq2h5 import write_h5, _NON_SIGNAL_KEYS
 
 # Fields stored at the top level of the .mat 'd' struct that are NOT channels.
 # Mostly mirrors acq2h5's _NON_SIGNAL_KEYS, but the .mat format names its

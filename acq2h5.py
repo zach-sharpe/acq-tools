@@ -163,7 +163,8 @@ def write_h5(d, outfile, file_meta=None):
 if __name__ == '__main__':
 
     # Imported lazily (only when run as a script) to avoid a circular import:
-    # convert_acq imports write_h5 from this module.
+    # convert_acq imports write_h5 from this module. Run directly this is the
+    # flat form; the package-relative form is unused here (CLI runs standalone).
     from convert_acq import convert_acq
 
     args = argument_parser(sys.argv[1:])

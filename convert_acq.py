@@ -35,14 +35,28 @@ import bioread
 import pytz
 from scipy import io as sio
 
-from acq_common import (
-    parse_data,
-    cat_multiple_files,
-    validate_sampling_rates,
-    build_timestamp_vector,
-    export_event_markers_csv,
-)
-from acq2h5 import write_h5
+# Internal imports use a dual pattern so this module works both as a package
+# (from acq_tools.convert_acq import convert_acq) and when a script in this
+# folder is run directly (python acq2mat.py ...). The relative form is tried
+# first; the flat form is the fallback for direct/standalone execution.
+try:
+    from .acq_common import (
+        parse_data,
+        cat_multiple_files,
+        validate_sampling_rates,
+        build_timestamp_vector,
+        export_event_markers_csv,
+    )
+    from .acq2h5 import write_h5
+except ImportError:
+    from acq_common import (
+        parse_data,
+        cat_multiple_files,
+        validate_sampling_rates,
+        build_timestamp_vector,
+        export_event_markers_csv,
+    )
+    from acq2h5 import write_h5
 
 # Output-format registry, mirroring FORMATS in acq2mat_gui.py. The per-sample
 # timestamp vector is named differently by format (the values are identical

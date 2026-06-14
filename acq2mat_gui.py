@@ -12,7 +12,11 @@ the GUI and the CLI scripts all run the exact same pipeline.
 
 import FreeSimpleGUI as sg
 
-from convert_acq import convert_acq, default_filename, FORMATS as _CORE_FORMATS
+# Dual import: package-relative first, flat fallback for direct execution.
+try:
+    from .convert_acq import convert_acq, default_filename, FORMATS as _CORE_FORMATS
+except ImportError:
+    from convert_acq import convert_acq, default_filename, FORMATS as _CORE_FORMATS
 
 # GUI display labels per format, keyed to convert_acq's canonical FORMATS so the
 # extension (.mat/.h5) has a single source of truth.
