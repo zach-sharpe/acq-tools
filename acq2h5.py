@@ -44,18 +44,13 @@ import sys
 import argparse
 import os
 import json
-import bioread
 import numpy as np
-import pytz
 import h5py
 
-from acq_common import (
-    parse_data,
-    cat_multiple_files,
-    validate_sampling_rates,
-    build_timestamp_vector,
-    export_event_markers_csv,
-)
+# NOTE: this module is imported by convert_acq (for write_h5 / _NON_SIGNAL_KEYS)
+# and by convert.py. To keep those imports lightweight and avoid a circular
+# import, the conversion pipeline lives in convert_acq -- this file only owns
+# the HDF5 writer plus a thin CLI (which imports convert_acq lazily in __main__).
 
 # Top-level keys in the processing dict that are NOT physiologic channels.
 _NON_SIGNAL_KEYS = {
@@ -167,56 +162,23 @@ def write_h5(d, outfile, file_meta=None):
 
 if __name__ == '__main__':
 
+    # Imported lazily (only when run as a script) to avoid a circular import:
+    # convert_acq imports write_h5 from this module.
+    from convert_acq import convert_acq
+
     args = argument_parser(sys.argv[1:])
-    data = [bioread.read_file(i) for i in args.file] # read each file specified in command line
 
-    # Parse data and extract start times
-    parsed = [parse_data(i) for i in data]
-    d_list = [p[0] for p in parsed]
-    start_times = [p[1] for p in parsed]
-    file_meta = parsed[0][2]  # file-level provenance from the first file
+    # convert_acq() takes (folder, filename); the CLI exposes a single -o path.
+    # Split it back apart, mapping an empty directory to the current directory.
+    output_folder, output_filename = os.path.split(args.outfile)
+    output_folder = output_folder or '.'
 
-    if len(d_list) >= 2: # concatenate files if there are more than one
-        d = cat_multiple_files(d_list, start_times)
-    else:
-        d = d_list[0]
-
-    # Enforce a single shared sampling frequency across all channels. The .h5
-    # layout assumes one rate (top-level /Fs, one timestamp axis), so a mismatch
-    # is a hard error -- same behavior as acq2mat.py.
-    validate_sampling_rates(d)
-
-    # Add metadata for time vector calculation (always, for both single and multi-file)
-    channel_keys = [k for k in d.keys() if k != 'event_markers']
-    Fs = d[channel_keys[0]]['Fs']
-    d['recording_start_utc'] = start_times[0].isoformat()
-    EST = pytz.timezone('US/Eastern')
-    start_time_local = start_times[0].astimezone(EST)
-    d['recording_start_local'] = start_time_local.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-    d['Fs'] = Fs
-
-    # Build unix timestamp vector (epoch seconds) for all samples
-    n_samples = len(d[channel_keys[0]]['wave'])
-    d['timestamps_unix'] = build_timestamp_vector(start_time_local, Fs, n_samples)
-
-    # Export event markers to CSV (before wrapping and saving to HDF5)
-    csv_date = start_time_local.strftime('%Y-%m-%d')
-    csv_output_dir = os.path.dirname(args.outfile)
-    csv_output_path = os.path.join(csv_output_dir, f'{csv_date}_extracted_comments.csv') if csv_output_dir else f'{csv_date}_extracted_comments.csv'
     try:
-        export_event_markers_csv(d['event_markers'], csv_output_path)
-        print(f"Event markers exported to: {csv_output_path}")
+        result = convert_acq(args.file, output_folder, output_filename, fmt='h5')
     except ValueError as e:
-        print(f"ERROR: Cannot export event markers CSV: {e}")
+        print(f"ERROR: {e}")
         sys.exit(1)
-    except Exception as e:
-        print(f"Warning: Could not export CSV: {e}")
 
-    # Convert datetime objects to ISO strings for JSON/HDF5 compatibility
-    if 'date_created_utc' in d['event_markers']:
-        d['event_markers']['date_created_utc'] = [
-            dt.isoformat() for dt in d['event_markers']['date_created_utc']
-        ]
-
-    write_h5(d, args.outfile, file_meta)
-    print(f"HDF5 file saved to: {args.outfile}")
+    for msg in result.messages:
+        print(msg)
+    print(f"HDF5 file saved to: {result.output_path}")
